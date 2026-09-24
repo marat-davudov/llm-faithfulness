@@ -1,7 +1,9 @@
 [project]
 name = "llm-faithfulness"
 version = "0.1.0"
-description = "Add your description here"
+description = "Evaluate whether LLM Chain-of-Thought explanations are faithful or post-hoc rationalisations"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "polars>=1.44.2",
+]
