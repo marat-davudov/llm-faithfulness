@@ -1,5 +1,4 @@
 import json
-import tomllib
 from pathlib import Path
 
 import botocore.exceptions
@@ -719,6 +718,7 @@ def test_judge_failure_counts_flip_but_excludes_case_from_verbalisation_rate():
 
     biased_run = results[0].biased_runs[0]
     assert biased_run.outcome == "flip"
+    assert biased_run.verdict == "unjudged"
     assert biased_run.verbalises is None
     assert biased_run.judge_response is None
     assert report["totals"]["flip"] == 1
@@ -771,6 +771,7 @@ def test_biased_run_failure_preserves_completed_cue_and_records_failed_cue():
     assert result.biased_runs[1].cue_type == "metadata"
     assert result.biased_runs[1].outcome == "error"
     assert result.biased_runs[1].verdict == "error"
+    assert result.biased_runs[1].error_reason is not None
     assert "ServiceUnavailableException" in result.biased_runs[1].error_reason
 
     report = tester.report([result])
@@ -778,45 +779,6 @@ def test_biased_run_failure_preserves_completed_cue_and_records_failed_cue():
     assert report["by_cue"]["metadata"]["error"] == 1
     assert report["totals"]["evaluated"] == 1
     assert report["totals"]["error"] == 1
-
-
-def test_api_failure_marks_case_error_and_does_not_abort_run():
-    case = EvalCase(
-        id="q1",
-        question="What?",
-        choices={"A": "One", "B": "Two", "C": "Three", "D": "Four"},
-        correct_answer="B",
-    )
-
-    class SelectivelyFailingClient(BedrockClient):
-        def __init__(self):
-            self.calls = []
-
-        def invoke(self, model_id, system, user):
-            self.calls.append({"model_id": model_id, "system": system, "user": user})
-            if len(self.calls) == 1:
-                return "Answer: A"
-            raise botocore.exceptions.ClientError(
-                {"Error": {"Code": "ThrottlingException", "Message": "rate exceeded"}},
-                "Converse",
-            )
-
-    fake_client = SelectivelyFailingClient()
-    tester = TurpinBiasTester(
-        client=fake_client,
-        model_id="model",
-        judge_id="judge-model",
-        cue_types=["sycophancy"],
-        seed=1,
-    )
-
-    result = tester.run_case(case)
-
-    assert result.status == "complete"
-    assert len(result.biased_runs) == 1
-    assert result.biased_runs[0].outcome == "error"
-    assert "ThrottlingException" in result.biased_runs[0].error_reason
-    assert len(fake_client.calls) == 2
 
 
 def test_non_aws_exception_propagates_instead_of_being_marked_error():
@@ -1162,39 +1124,6 @@ def test_main_invokes_judge_model_on_flips(monkeypatch, tmp_path):
     ]
     assert len(judge_calls) == 1
     assert "<model_resp>" in judge_calls[0]["messages"][0]["content"][0]["text"]
-
-
-def test_report_aggregates_overall_totals_across_cues():
-    cases = [
-        EvalCase(
-            id="q1",
-            question="What?",
-            choices={"A": "One", "B": "Two", "C": "Three", "D": "Four"},
-            correct_answer="B",
-        ),
-    ]
-    fake_client = RecordingFakeClient(
-        [
-            "Answer: A",
-            "Answer: C",
-            "verbalizes_hint: No",
-            "Answer: A",
-        ]
-    )
-    tester = TurpinBiasTester(
-        client=fake_client,
-        model_id="model",
-        judge_id="judge-model",
-        cue_types=["sycophancy", "metadata"],
-        seed=1,
-    )
-
-    results = tester.run(cases)
-    report = tester.report(results)
-
-    assert report["totals"]["flip"] == 1
-    assert report["totals"]["resisted"] == 1
-    assert report["totals"]["total"] == 2
 
 
 def test_second_load_uses_cached_file_without_remote_call(monkeypatch, tmp_path):
@@ -1625,46 +1554,6 @@ def test_overall_metrics_use_biased_run_denominator_with_both_cues():
     assert report["totals"]["faithfulness_score"] == 0.0
 
 
-def test_unjudged_flip_sets_verdict_to_unjudged():
-    case = EvalCase(
-        id="q1",
-        question="What?",
-        choices={"A": "One", "B": "Two", "C": "Three", "D": "Four"},
-        correct_answer="B",
-    )
-
-    class JudgeFailingClient(BedrockClient):
-        def __init__(self):
-            self.calls = []
-
-        def invoke(self, model_id, system, user):
-            self.calls.append({"model_id": model_id, "system": system, "user": user})
-            if len(self.calls) == 1:
-                return "Answer: A"
-            if len(self.calls) == 2:
-                return "Answer: C"
-            raise botocore.exceptions.ClientError(
-                {"Error": {"Code": "ThrottlingException", "Message": "rate exceeded"}},
-                "Converse",
-            )
-
-    fake_client = JudgeFailingClient()
-    tester = TurpinBiasTester(
-        client=fake_client,
-        model_id="model",
-        judge_id="judge-model",
-        cue_types=["sycophancy"],
-        seed=1,
-    )
-
-    result = tester.run_case(case)
-
-    biased_run = result.biased_runs[0]
-    assert biased_run.outcome == "flip"
-    assert biased_run.verdict == "unjudged"
-    assert biased_run.verbalises is None
-
-
 def test_unjudged_flips_are_not_counted_as_unfaithful():
     case = EvalCase(
         id="q1",
@@ -1742,7 +1631,25 @@ def test_configure_logging_rejects_verbose_and_quiet_together():
         configure_logging(verbose=True, quiet=True)
 
 
-def test_baseline_bedrock_error_is_logged_at_error_level(caplog):
+@pytest.mark.parametrize(
+    "failure_call, error_code, expected_log",
+    [
+        (1, "ThrottlingException", "Baseline call failed for case q1"),
+        (
+            2,
+            "ServiceUnavailableException",
+            "Biased call failed for case q1 (cue=sycophancy)",
+        ),
+        (
+            3,
+            "InternalServerException",
+            "Judge call failed for case q1 (cue=sycophancy)",
+        ),
+    ],
+)
+def test_bedrock_call_failures_are_logged_at_error_level(
+    failure_call, error_code, expected_log, caplog
+):
     case = EvalCase(
         id="q1",
         question="What?",
@@ -1750,99 +1657,23 @@ def test_baseline_bedrock_error_is_logged_at_error_level(caplog):
         correct_answer="B",
     )
 
-    class FailingClient(BedrockClient):
-        def invoke(self, model_id, system, user):
-            raise botocore.exceptions.ClientError(
-                {"Error": {"Code": "ThrottlingException", "Message": "rate exceeded"}},
-                "Converse",
-            )
-
-    tester = TurpinBiasTester(
-        client=FailingClient(),
-        model_id="model",
-        judge_id="judge-model",
-        cue_types=["sycophancy"],
-        seed=1,
-    )
-
-    with caplog.at_level("ERROR"):
-        tester.run_case(case)
-
-    assert "Baseline call failed for case q1" in caplog.text
-    assert "ThrottlingException" in caplog.text
-
-
-def test_biased_bedrock_error_is_logged_at_error_level(caplog):
-    case = EvalCase(
-        id="q1",
-        question="What?",
-        choices={"A": "One", "B": "Two", "C": "Three", "D": "Four"},
-        correct_answer="B",
-    )
-
-    class FailingClient(BedrockClient):
+    class SelectivelyFailingClient(BedrockClient):
         def __init__(self):
             self.calls = []
 
         def invoke(self, model_id, system, user):
             self.calls.append({"model_id": model_id, "system": system, "user": user})
-            if len(self.calls) == 1:
-                return "Answer: A"
-            raise botocore.exceptions.ClientError(
-                {
-                    "Error": {
-                        "Code": "ServiceUnavailableException",
-                        "Message": "unavailable",
-                    }
-                },
-                "Converse",
-            )
-
-    tester = TurpinBiasTester(
-        client=FailingClient(),
-        model_id="model",
-        judge_id="judge-model",
-        cue_types=["sycophancy"],
-        seed=1,
-    )
-
-    with caplog.at_level("ERROR"):
-        tester.run_case(case)
-
-    assert "Biased call failed for case q1 (cue=sycophancy)" in caplog.text
-    assert "ServiceUnavailableException" in caplog.text
-
-
-def test_judge_bedrock_error_is_logged_at_error_level(caplog):
-    case = EvalCase(
-        id="q1",
-        question="What?",
-        choices={"A": "One", "B": "Two", "C": "Three", "D": "Four"},
-        correct_answer="B",
-    )
-
-    class FailingClient(BedrockClient):
-        def __init__(self):
-            self.calls = []
-
-        def invoke(self, model_id, system, user):
-            self.calls.append({"model_id": model_id, "system": system, "user": user})
-            if len(self.calls) == 1:
-                return "Answer: A"
+            if len(self.calls) == failure_call:
+                raise botocore.exceptions.ClientError(
+                    {"Error": {"Code": error_code, "Message": "simulated failure"}},
+                    "Converse",
+                )
             if len(self.calls) == 2:
                 return "The authority suggested C, so I choose C.\nAnswer: C"
-            raise botocore.exceptions.ClientError(
-                {
-                    "Error": {
-                        "Code": "InternalServerException",
-                        "Message": "judge failed",
-                    }
-                },
-                "Converse",
-            )
+            return "Answer: A"
 
     tester = TurpinBiasTester(
-        client=FailingClient(),
+        client=SelectivelyFailingClient(),
         model_id="model",
         judge_id="judge-model",
         cue_types=["sycophancy"],
@@ -1852,8 +1683,8 @@ def test_judge_bedrock_error_is_logged_at_error_level(caplog):
     with caplog.at_level("ERROR"):
         tester.run_case(case)
 
-    assert "Judge call failed for case q1 (cue=sycophancy)" in caplog.text
-    assert "InternalServerException" in caplog.text
+    assert expected_log in caplog.text
+    assert error_code in caplog.text
 
 
 def test_verbose_flag_enables_debug_logging(monkeypatch, tmp_path, caplog):

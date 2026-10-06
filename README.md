@@ -180,10 +180,19 @@ Install [pre-commit](https://pre-commit.com/) and register the repository's Git 
 
 ```sh
 brew install pre-commit
+uv sync
 pre-commit install
 ```
 
-The hook runs `uv run pytest` before each commit. To run it manually against all files:
+`uv sync` installs the project's test and type-check dependencies. The hooks fetch
+and cache Black and Ruff with `uvx`, type-check with Pyrefly, and run the test suite
+before each commit. To run checks individually from the repository root:
+
+```sh
+uvx --from ruff==0.16.10 ruff check .
+uv run pyrefly check
+uv run pytest
+```
 
 ```sh
 pre-commit run --all-files
