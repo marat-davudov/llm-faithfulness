@@ -69,7 +69,6 @@ The code is intentionally kept as a small, copy-pasteable Python module so it ca
 ### Built With
 
 * [![Python][Python]][Python-url]
-* [![Polars][Polars]][Polars-url]
 * [![AWS][AWS]][AWS-url]
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -104,13 +103,42 @@ This is a [uv](https://docs.astral.sh/uv/) managed Python project. To get a loca
 <!-- USAGE EXAMPLES -->
 ## Usage
 
-The current entry point loads a sample of the MedQA-USMLE benchmark and prints the first row:
+The CLI runs the Turpin bias-resistance evaluation on a sample of the MedQA-USMLE benchmark using AWS Bedrock. Example:
 
 ```sh
-uv run python main.py
+uv run python main.py \
+  --model-id us.anthropic.claude-haiku-4-5-20251001-v1:0 \
+  --judge-id us.anthropic.claude-sonnet-4-5-20250929-v1:0 \
+  --region us-east-1 \
+  --sample-size 50 \
+  --seed 42 \
+  --cue both \
+  --output results.jsonl
 ```
 
-Live bias-resistance evaluation runs against AWS Bedrock. Make sure your AWS credentials are configured and Bedrock model access is enabled in the target region, then run the evaluator CLI (work in progress).
+### CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--model-id` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock cross-region inference profile for the target model. |
+| `--judge-id` | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Bedrock cross-region inference profile for the verbalisation judge. |
+| `--region` | None | AWS region passed to the Bedrock runtime client. |
+| `--sample-size` | `50` | Number of cases to sample and evaluate. |
+| `--seed` | `42` | Random seed for case sampling and bias-target selection. |
+| `--cue` | `both` | Bias cue to inject: `sycophancy`, `metadata`, or `both`. |
+| `--data-path` | None | Path to a local MedQA JSONL file; otherwise the dataset is downloaded/cached. |
+| `--output` | `results.jsonl` | Path for the per-case JSONL results file. |
+
+### Prerequisites
+
+* Configure AWS credentials for the target account/region.
+* Enable Bedrock model access for the target and judge inference profiles in the target region.
+* Verify the exact inference profile IDs available to your account if a run fails with a model-not-found error:
+  ```sh
+  aws bedrock list-inference-profiles --region <region>
+  ```
+
+The CLI prints a human-readable report and writes per-case JSONL results with model/Judge outputs and verdicts.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -145,6 +173,21 @@ Don't forget to give the project a star! Thanks again!
 3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the Branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
+
+### Run tests on every commit
+
+Install [pre-commit](https://pre-commit.com/) and register the repository's Git hook:
+
+```sh
+brew install pre-commit
+pre-commit install
+```
+
+The hook runs `uv run pytest` before each commit. To run it manually against all files:
+
+```sh
+pre-commit run --all-files
+```
 
 ### Top contributors:
 
@@ -188,7 +231,5 @@ Distributed under the Apache 2.0 License. See `LICENSE` for more information.
 [license-url]: https://github.com/marat-davudov/llm-faithfulness/blob/main/LICENSE
 [Python]: https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54
 [Python-url]: https://www.python.org/
-[Polars]: https://img.shields.io/badge/polars-0075FF?style=for-the-badge&logo=polars&logoColor=white
-[Polars-url]: https://pola.rs/
 [AWS]: https://img.shields.io/badge/AWS-%23FF9900.svg?style=for-the-badge&logo=amazon-aws&logoColor=white
 [AWS-url]: https://aws.amazon.com/bedrock/
